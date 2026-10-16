@@ -6,15 +6,17 @@ pub mod http_method;
 
 use http_method::HttpMethod;
 
+use crate::response::http_status_code::HttpStatusCode;
+
 #[allow(unused)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct RequestError {
-    status_code: u16,
-    message: String,
+    pub status_code: HttpStatusCode,
+    pub message: String,
 }
 
 #[allow(unused)]
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Headers {
     pub accept: Option<String>,
     pub authorization: Option<String>,
@@ -25,6 +27,7 @@ pub struct Headers {
 }
 
 #[allow(unused)]
+#[derive(Debug, PartialEq)]
 pub struct Request {
     request_target: String,
     headers: Headers,
@@ -65,7 +68,7 @@ impl Request {
        new() is a private constructor that reads the full HTTP headers
        into a buffer, as well as any residual bytes that belong to the body.
     */
-    fn new<T: Read>(stream: &mut T) -> Request {
+    fn new<T: Read>(stream: &mut T) -> Result<Request, RequestError> {
         // Stores all bytes that belong to the header
         let mut headers_buffer: Vec<u8> = vec![];
 
@@ -87,8 +90,11 @@ impl Request {
                 Err(e) => println!("Error reading into buffer: {:?}", e),
                 Ok(bytes_read) => {
                     if bytes_read == 0 {
-                        panic!()
-                    } // FIXME error_handling; propagate socket hangup.
+                        return Err(RequestError {
+                            status_code: HttpStatusCode::BadRequest,
+                            message: "Bad Request".to_string(),
+                        });
+                    }
                     // The stream may end up containing less bytes than we've allocated for the buffer.
                     // To ensure we only write valid data, slice the buffer from beginning to the last valid byte.
                     let bytes = &buf[0..bytes_read];
@@ -214,7 +220,7 @@ impl Request {
             user_agent: headers.remove("User-Agent"),
         };
 
-        Request {
+        Ok(Request {
             request_target: String::from_utf8(request_target)
                 .expect("Error converting request_target to UTF-8"), // FIXME error_handling
             headers,
@@ -223,53 +229,61 @@ impl Request {
             )
             .unwrap(), // FIXME error_handling
             body: body_buffer,
-        }
+        })
     }
 
     fn consume<T: Read>(stream: &mut T) -> Result<Self, RequestError> {
-        let mut request = Request::new(stream);
+        match Request::new(stream) {
+            Err(e) => Err(e),
+            Ok(mut request) => {
+                if request.method == HttpMethod::Get {
+                    return Ok(request);
+                };
 
-        if request.method == HttpMethod::Get {
-            return Ok(request);
-        };
-
-        // read() doesn't return until an EOF signal is read; HTTP requests don't send EOF
-        // terminators, so in order to read the body, we need to know the Content-Length
-        let mut total_bytes_read: usize = request.body.len();
-        while total_bytes_read
-            < request
-                .headers
-                .content_length
-                .expect("Empty content length")
-                .try_into()
-                .expect("Error converting content-length to u64")
-        // FIXME error_handling
-        {
-            let mut buf: [u8; 512] = [0; 512];
-            match stream.read(&mut buf) {
-                Err(e) => {
-                    return Err(RequestError {
-                        status_code: 500,
-                        message: format!("Error reading request body: {}", e),
-                    });
+                // read() doesn't return until an EOF signal is read; HTTP requests don't send EOF
+                // terminators, so in order to read the body, we need to know the Content-Length
+                let mut total_bytes_read: usize = request.body.len();
+                while total_bytes_read
+                    < request
+                        .headers
+                        .content_length
+                        .expect("Empty content length")
+                        .try_into()
+                        .expect("Error converting content-length to u64")
+                // FIXME error_handling
+                {
+                    let mut buf: [u8; 512] = [0; 512];
+                    match stream.read(&mut buf) {
+                        Err(e) => {
+                            return Err(RequestError {
+                                status_code: HttpStatusCode::InternalServerError,
+                                message: format!("Error reading request body: {}", e),
+                            });
+                        }
+                        Ok(bytes_read) => {
+                            let bytes = &buf[0..bytes_read];
+                            request.body.extend(bytes);
+                            total_bytes_read += bytes_read;
+                        }
+                    }
                 }
-                Ok(bytes_read) => {
-                    let bytes = &buf[0..bytes_read];
-                    request.body.extend(bytes);
-                    total_bytes_read += bytes_read;
-                }
+                Ok(request)
             }
         }
-        Ok(request)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::assert_eq;
+
     use super::*;
 
     mod fixtures {
-        pub fn create_stream(desired_header_size: Option<usize>) -> String {
+        pub fn create_stream(
+            desired_header_size: Option<usize>,
+            omit_header_terminator: bool,
+        ) -> String {
             let accept = "text/html,application/xhtml+xml,application/xml;q=0.9,/;q=0.8";
             let authorization = "Basic dXNlcjpwYXNz";
             let content_length = 0u64;
@@ -279,26 +293,29 @@ mod tests {
 
             let headers = format!(
                 "GET /path?foo=bar HTTP/1.1\r\n\
-     Host: {}\r\n\
-     Accept: {}\r\n\
-     Authorization: {}\r\n\
-     Content-Length: {}\r\n\
-     Content-Type: {}\r\n\
-     User-Agent: {}\r\n",
+                Host: {}\r\n\
+                Accept: {}\r\n\
+                Authorization: {}\r\n\
+                Content-Length: {}\r\n\
+                Content-Type: {}\r\n\
+                User-Agent: {}",
                 host, accept, authorization, content_length, content_type, user_agent,
             );
 
             match desired_header_size {
                 Some(desired_header_size) => {
                     return format!(
-                        "{}X-Pad: {}\r\n\r\n{}",
+                        "{}\r\nX-Pad: {}\r\n\r\n{}",
                         headers,
                         "A".repeat(desired_header_size - headers.len() - "X-Pad: ".len()),
                         "BODY_START"
                     );
                 }
                 None => {
-                    return format!("{}\r\nBODY_START", headers);
+                    if omit_header_terminator {
+                        return format!("{}", headers);
+                    }
+                    return format!("{}\r\n\r\nBODY_START", headers);
                 }
             }
         }
@@ -306,7 +323,7 @@ mod tests {
 
     #[test]
     fn it_parses_request_line_and_header_fields() {
-        let stream = fixtures::create_stream(None);
+        let stream = fixtures::create_stream(None, false);
 
         let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
         let headers = request.headers;
@@ -323,14 +340,14 @@ mod tests {
         assert_eq!(request.body, b"BODY_START");
     }
 
-    /*
-        Tests a scenario when the HTTP_HEADER_TERMINATOR arrives in sequential reads;
-        creates a stream with a header that is 510 bytes in size, and results in \r\n\r\n
-        being split across two reads
-    */
+    /**
+     * Tests a scenario when the HTTP_HEADER_TERMINATOR arrives in sequential reads;
+     * creates a stream with a header that is 510 bytes in size, and results in \r\n\r\n
+     * being split across two reads
+     */
     #[test]
     fn it_handles_sequential_reads() {
-        let stream = fixtures::create_stream(Some(510));
+        let stream = fixtures::create_stream(Some(510), false);
         let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
         let headers = request.headers;
 
@@ -344,5 +361,15 @@ mod tests {
         assert_eq!(headers.user_agent.unwrap(), "ExampleBrowser/1.0");
         assert_eq!(headers.authorization.unwrap(), "Basic dXNlcjpwYXNz");
         assert_eq!(request.body, b"BODY_START");
+    }
+
+    #[test]
+    fn it_handles_missing_header_terminator() {
+        let stream = fixtures::create_stream(None, true);
+        let error = RequestError {
+            status_code: HttpStatusCode::BadRequest,
+            message: String::from("Bad Request"),
+        };
+        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
 }

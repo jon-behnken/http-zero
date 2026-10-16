@@ -4,6 +4,7 @@ use std::sync::{Arc, mpsc::Sender};
 use std::thread;
 
 use crate::request::Request;
+use crate::response::Response;
 use crate::router::Router;
 
 /**
@@ -69,13 +70,17 @@ impl Server {
 
     fn create_stream_handler(router: Router) -> StreamHandler {
         Arc::new(move |mut stream: TcpStream| {
-            let request = Request::from_stream(&mut stream).unwrap(); // FIXME error_handling
-            println!(
-                "[Router] [{:?}] {:?}",
-                request.method(),
-                request.request_target()
-            );
-            let response = router.dispatch(request);
+            let response: Response = match Request::from_stream(&mut stream) {
+                Err(e) => Response::new(e.status_code, e.message.into()),
+                Ok(request) => {
+                    println!(
+                        "[Router] [{:?}] {:?}",
+                        request.method(),
+                        request.request_target()
+                    );
+                    router.dispatch(request)
+                }
+            };
             stream.write_all(&response.to_bytes()).unwrap(); //FIXME error_handling
         })
     }
@@ -83,11 +88,11 @@ impl Server {
 
 #[cfg(test)]
 mod test {
-    use std::io::{Read, Write};
+    use std::io::{Error, Read, Write};
     use std::net::{Shutdown, TcpStream};
-    use std::panic;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
+    use std::{assert_eq, panic};
 
     use super::*;
 
@@ -96,93 +101,100 @@ mod test {
     const EXPECTED_DURATION_THRESHOLD_MS: u16 =
         TEST_HANDLER_SLEEP_TIME_MS + THREAD_OVERHEAD_BUFFER_MS;
 
-    fn test_stream_handler(mut stream: TcpStream) {
-        thread::sleep(Duration::from_millis(TEST_HANDLER_SLEEP_TIME_MS.into()));
-        stream.write(b"done").unwrap();
-    }
+    mod fixtures {
+        use super::*;
 
-    // send_request takes ownership of sender and returns a closure which
-    // captures it. The closure outlives the scope of send_request,
-    // which would result in a dangling reference (sender would be dropped).
-    //
-    // This is where Rust requires the `move` keyword -- to force ownership
-    // into the closure.
-    fn send_request(sender: Sender<()>, port: u16, hangup: bool) -> impl FnOnce() {
-        move || {
-            let mut stream = TcpStream::connect(format!("localhost:{}", port))
-                .expect("Error connecting to localhost on port 6113");
-            stream.write(b"ping").expect("Error sending request");
+        pub fn send_request(
+            port: u16,
+            hangup: bool,
+            sender: Option<Sender<()>>,
+        ) -> impl FnOnce() -> Result<[u8; 512], Error> {
+            move || {
+                let mut stream = TcpStream::connect(format!("localhost:{}", port))
+                    .expect("Error connecting to localhost on port 6113");
+                stream.write(b"ping").expect("Error sending request");
 
-            if hangup {
-                stream.shutdown(Shutdown::Write).unwrap();
+                if hangup {
+                    stream.shutdown(Shutdown::Write).unwrap();
+                }
+
+                let mut response = [0; 512];
+                if let Err(e) = stream.read(&mut response) {
+                    return Err(e);
+                }
+
+                if let Some(sender) = sender {
+                    if let Err(e) = sender.send(()) {
+                        println!("{:?}", e);
+                        panic!()
+                    }
+                }
+
+                Ok(response)
             }
+        }
 
-            let mut response = [0; 4];
-            stream.read(&mut response).unwrap();
-            if let Err(e) = sender.send(()) {
-                println!("{:?}", e);
-                panic!()
+        pub fn start_server(port: u16, stream_handler: Option<StreamHandler>) {
+            let (sender, receiver) = channel::<()>();
+
+            let options = ServerOptions {
+                stream_handler,
+                channel_message_sender: Some(sender),
+            };
+            let router = Router::new();
+
+            thread::spawn(move || {
+                Server::start(router, port, Some(options));
+            });
+
+            if let Err(e) = receiver.recv() {
+                panic!("Error receiving server started signal: {:?}", e)
             }
         }
     }
 
     #[test]
     fn it_handles_requests_concurrently() {
-        let (sender, receiver) = channel::<()>();
-
-        let options = ServerOptions {
-            stream_handler: Some(Arc::new(test_stream_handler)),
-            channel_message_sender: Some(sender),
-        };
-
-        let router = Router::new();
-        let port: u16 = 6113;
-
-        thread::spawn(move || {
-            Server::start(router, port, Some(options));
-        });
-
-        // Start test once server starts up successfully
-        match receiver.recv() {
-            Err(e) => println!("Error receiving server started signal: {:?}", e),
-            Ok(_) => {
-                let (sender, receiver) = channel::<()>();
-                let sender_clone = sender.clone();
-
-                let start = Instant::now();
-
-                thread::spawn(send_request(sender, port, false));
-                thread::spawn(send_request(sender_clone, port, false));
-
-                receiver.recv().and_then(|_| receiver.recv()).unwrap();
-                let duration = start.elapsed();
-                assert!(duration.as_millis() < EXPECTED_DURATION_THRESHOLD_MS.into());
-            }
+        fn sleeping_stream_handler_fixture(mut stream: TcpStream) {
+            thread::sleep(Duration::from_millis(TEST_HANDLER_SLEEP_TIME_MS.into()));
+            stream.write(b"done").unwrap();
         }
+        let stream_handler = Arc::new(sleeping_stream_handler_fixture);
+
+        let port: u16 = 6113;
+        fixtures::start_server(port, Some(stream_handler));
+
+        let (sender, receiver) = channel::<()>();
+        let sender_clone = sender.clone();
+
+        let start = Instant::now();
+
+        thread::spawn(fixtures::send_request(port, false, Some(sender)));
+        thread::spawn(fixtures::send_request(port, false, Some(sender_clone)));
+
+        receiver.recv().and_then(|_| receiver.recv()).unwrap();
+        let duration = start.elapsed();
+        assert!(duration.as_millis() < EXPECTED_DURATION_THRESHOLD_MS.into());
     }
 
     #[test]
     fn it_handles_client_disconnect() {
-        let (sender, receiver) = channel::<()>();
-
-        let options = ServerOptions {
-            stream_handler: None, // use real dispatcher
-            channel_message_sender: Some(sender),
-        };
-
-        let router = Router::new();
         let port: u16 = 6114;
-        thread::spawn(move || {
-            Server::start(router, port, Some(options));
-        });
-
-        match receiver.recv() {
-            Err(e) => println!("Error receiving server started signal: {:?}", e),
-            Ok(_) => {
-                let (sender, receiver) = channel::<()>();
-                thread::spawn(send_request(sender, port, true));
-                receiver.recv_timeout(Duration::new(1, 0)).unwrap();
-            }
+        fixtures::start_server(port, None);
+        let (sender, receiver) = channel::<()>();
+        let thread = thread::spawn(fixtures::send_request(port, true, Some(sender)));
+        receiver.recv_timeout(Duration::new(1, 0)).unwrap();
+        let result = thread.join().unwrap();
+        match result {
+            Ok(response) => assert_eq!(
+                "HTTP/1.1 400 Bad Request",
+                std::str::from_utf8(&response)
+                    .unwrap()
+                    .split("\r\n\r\n")
+                    .next()
+                    .unwrap()
+            ),
+            Err(_) => panic!(),
         }
     }
 }
