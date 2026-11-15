@@ -72,6 +72,8 @@ impl Request {
         // Stores all bytes that belong to the header
         let mut headers_buffer: Vec<u8> = vec![];
 
+        let foo: fn() -> u8 = || 9;
+
         // Stores any bytes that are read beyond the HTTP_HEADER_TERMINATOR
         let mut body_buffer: Vec<u8> = vec![];
 
@@ -87,7 +89,7 @@ impl Request {
             // top-level headers_buffer.
             let mut buf: [u8; 512] = [0; 512];
             match stream.read(&mut buf) {
-                Err(e) => println!("Error reading into buffer: {:?}", e),
+                Err(e) => println!("Error reading into buffer: {:?}", e), // FIXME error_handling
                 Ok(bytes_read) => {
                     if bytes_read == 0 {
                         return Err(RequestError {
@@ -261,6 +263,12 @@ impl Request {
                             });
                         }
                         Ok(bytes_read) => {
+                            if bytes_read == 0 {
+                                return Err(RequestError {
+                                    status_code: HttpStatusCode::BadRequest,
+                                    message: "Bad Request".to_string(),
+                                });
+                            }
                             let bytes = &buf[0..bytes_read];
                             request.body.extend(bytes);
                             total_bytes_read += bytes_read;
@@ -280,10 +288,7 @@ mod tests {
     use super::*;
 
     mod fixtures {
-        pub fn create_stream(
-            desired_header_size: Option<usize>,
-            omit_header_terminator: bool,
-        ) -> String {
+        pub fn create_headers(header_size: Option<usize>, omit_terminator: bool) -> String {
             let accept = "text/html,application/xhtml+xml,application/xml;q=0.9,/;q=0.8";
             let authorization = "Basic dXNlcjpwYXNz";
             let content_length = 0u64;
@@ -291,7 +296,7 @@ mod tests {
             let host = "example.com";
             let user_agent = "ExampleBrowser/1.0";
 
-            let headers = format!(
+            let mut headers: String = format!(
                 "GET /path?foo=bar HTTP/1.1\r\n\
                 Host: {}\r\n\
                 Accept: {}\r\n\
@@ -302,28 +307,34 @@ mod tests {
                 host, accept, authorization, content_length, content_type, user_agent,
             );
 
-            match desired_header_size {
-                Some(desired_header_size) => {
-                    return format!(
-                        "{}\r\nX-Pad: {}\r\n\r\n{}",
-                        headers,
-                        "A".repeat(desired_header_size - headers.len() - "X-Pad: ".len()),
-                        "BODY_START"
-                    );
-                }
-                None => {
-                    if omit_header_terminator {
-                        return format!("{}", headers);
-                    }
-                    return format!("{}\r\n\r\nBODY_START", headers);
-                }
+            if let Some(desired_header_size) = header_size {
+                let padding: String = format!(
+                    "{}\r\nX-Pad: {}",
+                    headers,
+                    "A".repeat(desired_header_size - headers.len() - "X-Pad: ".len())
+                );
+                headers.push_str(&padding)
+            };
+
+            if omit_terminator {
+                return headers;
             }
+            headers.push_str("\r\n\r\n");
+            headers
+        }
+
+        pub fn create_stream(mut headers: Option<String>) -> String {
+            if headers.is_none() {
+                headers = Some(create_headers(None, false));
+            };
+            let body = "BODY_FIXTURE";
+            return format!("{}{}", headers.unwrap(), body);
         }
     }
 
     #[test]
     fn it_parses_request_line_and_header_fields() {
-        let stream = fixtures::create_stream(None, false);
+        let stream = fixtures::create_stream(None);
 
         let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
         let headers = request.headers;
@@ -337,7 +348,7 @@ mod tests {
         );
         assert_eq!(headers.user_agent.unwrap(), "ExampleBrowser/1.0");
         assert_eq!(headers.authorization.unwrap(), "Basic dXNlcjpwYXNz");
-        assert_eq!(request.body, b"BODY_START");
+        assert_eq!(request.body, b"BODY_FIXTURE");
     }
 
     /**
@@ -347,7 +358,9 @@ mod tests {
      */
     #[test]
     fn it_handles_sequential_reads() {
-        let stream = fixtures::create_stream(Some(510), false);
+        let headers = fixtures::create_headers(Some(510), false);
+        let stream = fixtures::create_stream(Some(headers));
+
         let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
         let headers = request.headers;
 
@@ -360,16 +373,21 @@ mod tests {
         );
         assert_eq!(headers.user_agent.unwrap(), "ExampleBrowser/1.0");
         assert_eq!(headers.authorization.unwrap(), "Basic dXNlcjpwYXNz");
-        assert_eq!(request.body, b"BODY_START");
+        assert_eq!(request.body, b"BODY_FIXTURE");
     }
 
     #[test]
     fn it_handles_missing_header_terminator() {
-        let stream = fixtures::create_stream(None, true);
+        let headers = fixtures::create_headers(None, true);
+        let stream = fixtures::create_stream(Some(headers));
+
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
             message: String::from("Bad Request"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
+
+    #[test]
+    fn it_handles_missing_body_terminator() {}
 }
