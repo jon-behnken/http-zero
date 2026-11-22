@@ -395,6 +395,18 @@ mod tests {
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
+
+    #[test]
+    fn it_handles_method_not_implemented() {
+        let headers: String = String::from("NOTIMPLEMENTED /path?foo=bar HTTP/1.1\r\n\r\n");
+        let stream = fixtures::create_stream(&headers, None);
+        let error = RequestError {
+            status_code: HttpStatusCode::NotImplemented,
+            message: String::from("Not Implemented"),
+        };
+        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+    }
+
     #[test]
     fn it_parses_header_fields() {
         let headers = fixtures::create_headers(HttpMethod::Get, None, None, false);

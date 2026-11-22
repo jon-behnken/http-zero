@@ -1,6 +1,9 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
+use crate::request::request_error::RequestError;
+use crate::response::http_status_code::HttpStatusCode;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum HttpMethod {
     Get,
@@ -23,7 +26,7 @@ impl Display for HttpMethod {
 }
 
 impl FromStr for HttpMethod {
-    type Err = String;
+    type Err = RequestError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input {
@@ -32,7 +35,10 @@ impl FromStr for HttpMethod {
             "POST" => Ok(HttpMethod::Post),
             "PUT" => Ok(HttpMethod::Put),
             "PATCH" => Ok(HttpMethod::Patch),
-            _ => Err(format!("Unknown HTTP method encountered: {}", input)),
+            _ => Err(RequestError {
+                status_code: HttpStatusCode::NotImplemented,
+                message: "Not Implemented".to_string(),
+            }),
         }
     }
 }

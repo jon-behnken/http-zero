@@ -28,13 +28,3 @@ impl From<Utf8Error> for RequestError {
         }
     }
 }
-
-impl From<String> for RequestError {
-    fn from(value: String) -> Self {
-        eprintln!("{}", value);
-        RequestError {
-            status_code: HttpStatusCode::BadRequest,
-            message: "Bad Request".to_string(),
-        }
-    }
-}

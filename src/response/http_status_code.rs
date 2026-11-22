@@ -6,6 +6,7 @@ pub enum HttpStatusCode {
     BadRequest = 400,
     NotFound = 404,
     InternalServerError = 500,
+    NotImplemented = 501,
 }
 
 impl HttpStatusCode {
@@ -16,6 +17,7 @@ impl HttpStatusCode {
             HttpStatusCode::NotFound => String::from("Not Found"),
             HttpStatusCode::BadRequest => String::from("Bad Request"),
             HttpStatusCode::InternalServerError => String::from("Internal Server Error"),
+            HttpStatusCode::NotImplemented => String::from("Not Implemented"),
         }
     }
 }
