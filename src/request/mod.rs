@@ -209,6 +209,7 @@ impl Request {
             i += 1;
         }
 
+        let method = HttpMethod::from_str(from_utf8(&method)?)?;
         let content_length: Result<Option<u64>, RequestError> =
             match headers.remove("content-length") {
                 Some(c) => match c.parse::<u64>() {
@@ -218,7 +219,15 @@ impl Request {
                         message: "Bad Request".to_string(),
                     }),
                 },
-                None => Ok(None),
+                None => {
+                    if method.length_required() {
+                        return Err(RequestError {
+                            status_code: HttpStatusCode::LengthRequired,
+                            message: "Length Required".to_string(),
+                        });
+                    };
+                    Ok(None)
+                }
             };
 
         let headers = Headers {
@@ -233,7 +242,7 @@ impl Request {
         Ok(Request {
             request_target: String::from_utf8(request_target)?,
             headers,
-            method: HttpMethod::from_str(from_utf8(&method)?)?,
+            method,
             body: body_buffer,
         })
     }
@@ -458,6 +467,19 @@ mod tests {
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
             message: String::from("Bad Request"),
+        };
+        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+    }
+
+    #[test]
+
+    fn it_handles_content_length_required() {
+        let body = String::from("");
+        let headers: String = String::from("POST /path?foo=bar HTTP/1.1\r\n\r\n");
+        let stream = fixtures::create_stream(&headers, Some(body.clone()));
+        let error = RequestError {
+            status_code: HttpStatusCode::LengthRequired,
+            message: String::from("Length Required"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }

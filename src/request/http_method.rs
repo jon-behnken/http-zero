@@ -13,6 +13,13 @@ pub enum HttpMethod {
     Patch,
 }
 
+impl HttpMethod {
+    pub fn length_required(&self) -> bool {
+        let requires = [HttpMethod::Put, HttpMethod::Post, HttpMethod::Patch];
+        requires.contains(self)
+    }
+}
+
 impl Display for HttpMethod {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -20,7 +27,7 @@ impl Display for HttpMethod {
             HttpMethod::Options => write!(f, "OPTIONS"),
             HttpMethod::Post => write!(f, "POST"),
             HttpMethod::Put => write!(f, "PUT"),
-            HttpMethod::Patch => write!(f, "Patch"),
+            HttpMethod::Patch => write!(f, "PATCH"),
         }
     }
 }
