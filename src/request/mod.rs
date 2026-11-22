@@ -29,6 +29,13 @@ pub struct Request {
 }
 
 const HTTP_HEADER_TERMINATOR: &[u8; 4] = b"\r\n\r\n";
+const MAX_BODY_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
+/*
+    Compile-time check to ensure MAX_BODY_SIZE can never
+    be set to exceed the underlying architecture's storage capacity
+*/
+const _: () = assert!(MAX_BODY_SIZE < usize::MAX as u64);
 
 #[allow(unused)]
 impl Request {
@@ -189,8 +196,8 @@ impl Request {
             // Skip 2 bytes to exclude '\r\n'
             if advance_pointer {
                 headers.insert(
-                    String::from_utf8(header_key.clone().to_ascii_lowercase()).unwrap(), // FIXME error_handling
-                    String::from_utf8(header_value.clone()).unwrap(), // FIXME error_handling
+                    String::from_utf8(header_key.clone().to_ascii_lowercase())?,
+                    String::from_utf8(header_value.clone())?,
                 );
 
                 header_key.clear();
@@ -251,22 +258,28 @@ impl Request {
         match Request::new(stream) {
             Err(e) => Err(e),
             Ok(mut request) => {
-                if request.method == HttpMethod::Get {
+                let declared_total_bytes: usize;
+                if let Some(content_length) = request.headers.content_length {
+                    if (content_length >= MAX_BODY_SIZE) {
+                        let status_code = HttpStatusCode::ContentTooLarge;
+                        return Err(RequestError {
+                            status_code,
+                            message: "Too Large".to_string(),
+                        });
+                    }
+                    declared_total_bytes =
+                        usize::try_from(content_length).map_err(|_| RequestError {
+                            status_code: HttpStatusCode::BadRequest,
+                            message: "Bad R".to_string(),
+                        })?
+                } else {
                     return Ok(request);
                 };
 
                 // read() doesn't return until an EOF signal is read; HTTP requests don't send EOF
                 // terminators, so in order to read the body, we need to know the Content-Length
                 let mut total_bytes_read: usize = request.body.len();
-                while total_bytes_read
-                    < request
-                        .headers
-                        .content_length
-                        .expect("Empty content length")
-                        .try_into()
-                        .expect("Error converting content-length to u64")
-                // FIXME error_handling
-                {
+                while total_bytes_read < declared_total_bytes {
                     let mut buf: [u8; 512] = [0; 512];
                     match stream.read(&mut buf) {
                         Err(e) => {
@@ -395,8 +408,7 @@ mod tests {
     #[test]
     fn it_handles_malformed_request_line() {
         let body = String::from("");
-        let headers: String =
-            String::from("POST   /path?foo=bar HTTP/1.1\r\nContent-Length: abc\r\n\r\n");
+        let headers: String = String::from("POST   /path?foo=bar HTTP/1.1\r\n\r\n");
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
