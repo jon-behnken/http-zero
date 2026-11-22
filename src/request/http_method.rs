@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -7,6 +8,18 @@ pub enum HttpMethod {
     Post,
     Put,
     Patch,
+}
+
+impl Display for HttpMethod {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpMethod::Get => write!(f, "GET"),
+            HttpMethod::Options => write!(f, "OPTIONS"),
+            HttpMethod::Post => write!(f, "POST"),
+            HttpMethod::Put => write!(f, "PUT"),
+            HttpMethod::Patch => write!(f, "Patch"),
+        }
+    }
 }
 
 impl FromStr for HttpMethod {

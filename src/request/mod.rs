@@ -2,20 +2,14 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::str::{FromStr, from_utf8};
 
-pub mod http_method;
-
-use http_method::HttpMethod;
-
 use crate::response::http_status_code::HttpStatusCode;
 
-#[allow(unused)]
-#[derive(Debug, PartialEq)]
-pub struct RequestError {
-    pub status_code: HttpStatusCode,
-    pub message: String,
-}
+pub mod http_method;
+mod request_error;
 
-#[allow(unused)]
+use http_method::HttpMethod;
+use request_error::RequestError;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Headers {
     pub accept: Option<String>,
@@ -26,7 +20,6 @@ pub struct Headers {
     pub user_agent: Option<String>,
 }
 
-#[allow(unused)]
 #[derive(Debug, PartialEq)]
 pub struct Request {
     request_target: String,
@@ -71,8 +64,6 @@ impl Request {
     fn new<T: Read>(stream: &mut T) -> Result<Request, RequestError> {
         // Stores all bytes that belong to the header
         let mut headers_buffer: Vec<u8> = vec![];
-
-        let foo: fn() -> u8 = || 9;
 
         // Stores any bytes that are read beyond the HTTP_HEADER_TERMINATOR
         let mut body_buffer: Vec<u8> = vec![];
@@ -141,6 +132,14 @@ impl Request {
         while i < headers_buffer.len() - 2 {
             let advance_pointer = &headers_buffer[i..i + 2] == b"\r\n";
 
+            // A proper request line has two delimiter space characters
+            if reading_http_request_line && request_line_delimiter_count > 2 {
+                return Err(RequestError {
+                    status_code: HttpStatusCode::BadRequest,
+                    message: "Bad Request".to_string(),
+                });
+            }
+
             // Finished reading request line
             if advance_pointer && reading_http_request_line {
                 reading_http_request_line = false;
@@ -190,7 +189,7 @@ impl Request {
             // Skip 2 bytes to exclude '\r\n'
             if advance_pointer {
                 headers.insert(
-                    String::from_utf8(header_key.clone()).unwrap(), // FIXME error_handling
+                    String::from_utf8(header_key.clone().to_ascii_lowercase()).unwrap(), // FIXME error_handling
                     String::from_utf8(header_value.clone()).unwrap(), // FIXME error_handling
                 );
 
@@ -210,26 +209,31 @@ impl Request {
             i += 1;
         }
 
+        let content_length: Result<Option<u64>, RequestError> =
+            match headers.remove("content-length") {
+                Some(c) => match c.parse::<u64>() {
+                    Ok(c) => Ok(Some(c)),
+                    Err(e) => Err(RequestError {
+                        status_code: HttpStatusCode::BadRequest,
+                        message: "Bad Request".to_string(),
+                    }),
+                },
+                None => Ok(None),
+            };
+
         let headers = Headers {
-            authorization: headers.remove("Authorization"),
-            content_length: headers.remove("Content-Length").map(|h| {
-                h.parse::<u64>()
-                    .expect("Error parsing Content-Length header") // FIXME error_handling
-            }),
-            content_type: headers.remove("Content-Type"),
-            accept: headers.remove("Accept"),
-            host: headers.remove("Host"),
-            user_agent: headers.remove("User-Agent"),
+            authorization: headers.remove("authorization"),
+            content_length: content_length?,
+            content_type: headers.remove("content-type"),
+            accept: headers.remove("accept"),
+            host: headers.remove("host"),
+            user_agent: headers.remove("user-agent"),
         };
 
         Ok(Request {
-            request_target: String::from_utf8(request_target)
-                .expect("Error converting request_target to UTF-8"), // FIXME error_handling
+            request_target: String::from_utf8(request_target)?,
             headers,
-            method: HttpMethod::from_str(
-                from_utf8(&method).expect("HTTP method is not a valid UTF-8 string."),
-            )
-            .unwrap(), // FIXME error_handling
+            method: HttpMethod::from_str(from_utf8(&method)?)?,
             body: body_buffer,
         })
     }
@@ -270,6 +274,7 @@ impl Request {
                                 });
                             }
                             let bytes = &buf[0..bytes_read];
+                            println!("{:#?}", bytes);
                             request.body.extend(bytes);
                             total_bytes_read += bytes_read;
                         }
@@ -288,26 +293,39 @@ mod tests {
     use super::*;
 
     mod fixtures {
-        pub fn create_headers(header_size: Option<usize>, omit_terminator: bool) -> String {
+        use crate::request::http_method::HttpMethod;
+
+        pub fn create_headers(
+            http_method: HttpMethod,
+            content_length_override: Option<u64>,
+            header_size_override: Option<usize>,
+            omit_terminator: bool,
+        ) -> String {
             let accept = "text/html,application/xhtml+xml,application/xml;q=0.9,/;q=0.8";
             let authorization = "Basic dXNlcjpwYXNz";
-            let content_length = 0u64;
+
+            let mut content_length = 0u64;
+
+            if let Some(content_length_override) = content_length_override {
+                content_length = content_length_override;
+            };
+
             let content_type = "text/html";
             let host = "example.com";
             let user_agent = "ExampleBrowser/1.0";
 
             let mut headers: String = format!(
-                "GET /path?foo=bar HTTP/1.1\r\n\
+                "{} /path?foo=bar HTTP/1.1\r\n\
                 Host: {}\r\n\
                 Accept: {}\r\n\
                 Authorization: {}\r\n\
                 Content-Length: {}\r\n\
                 Content-Type: {}\r\n\
                 User-Agent: {}",
-                host, accept, authorization, content_length, content_type, user_agent,
+                http_method, host, accept, authorization, content_length, content_type, user_agent,
             );
 
-            if let Some(desired_header_size) = header_size {
+            if let Some(desired_header_size) = header_size_override {
                 let padding: String = format!(
                     "{}\r\nX-Pad: {}",
                     headers,
@@ -323,18 +341,23 @@ mod tests {
             headers
         }
 
-        pub fn create_stream(mut headers: Option<String>) -> String {
-            if headers.is_none() {
-                headers = Some(create_headers(None, false));
-            };
-            let body = "BODY_FIXTURE";
-            return format!("{}{}", headers.unwrap(), body);
+        pub fn create_stream(headers: &String, mut body: Option<String>) -> String {
+            if body.is_none() {
+                body = Some(String::from("BODY_FIXTURE"));
+            }
+            return format!("{}{}", headers, body.unwrap());
         }
     }
 
+    /**
+     * Tests a scenario when the HTTP_HEADER_TERMINATOR arrives in sequential reads;
+     * creates a stream with a header that is 510 bytes in size which results in
+     * the terminator sequence \r\n\r\n being split across two reads
+     */
     #[test]
-    fn it_parses_request_line_and_header_fields() {
-        let stream = fixtures::create_stream(None);
+    fn it_handles_header_terminator_across_sequential_reads() {
+        let headers = fixtures::create_headers(HttpMethod::Get, None, Some(510), false);
+        let stream = fixtures::create_stream(&headers, None);
 
         let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
         let headers = request.headers;
@@ -351,21 +374,35 @@ mod tests {
         assert_eq!(request.body, b"BODY_FIXTURE");
     }
 
-    /**
-     * Tests a scenario when the HTTP_HEADER_TERMINATOR arrives in sequential reads;
-     * creates a stream with a header that is 510 bytes in size, and results in \r\n\r\n
-     * being split across two reads
-     */
     #[test]
-    fn it_handles_sequential_reads() {
-        let headers = fixtures::create_headers(Some(510), false);
-        let stream = fixtures::create_stream(Some(headers));
+    fn it_parses_request_line() {
+        let headers = fixtures::create_headers(HttpMethod::Get, None, None, false);
+        let stream = fixtures::create_stream(&headers, None);
+        let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
+        assert_eq!(request.method, HttpMethod::Get);
+        assert_eq!(request.request_target, "/path?foo=bar");
+    }
+
+    #[test]
+    fn it_handles_malformed_request_line() {
+        let body = String::from("");
+        let headers: String =
+            String::from("POST   /path?foo=bar HTTP/1.1\r\nContent-Length: abc\r\n\r\n");
+        let stream = fixtures::create_stream(&headers, Some(body.clone()));
+        let error = RequestError {
+            status_code: HttpStatusCode::BadRequest,
+            message: String::from("Bad Request"),
+        };
+        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+    }
+    #[test]
+    fn it_parses_header_fields() {
+        let headers = fixtures::create_headers(HttpMethod::Get, None, None, false);
+        let stream = fixtures::create_stream(&headers, None);
 
         let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
         let headers = request.headers;
 
-        assert_eq!(request.method, HttpMethod::Get);
-        assert_eq!(request.request_target, "/path?foo=bar");
         assert_eq!(headers.host.unwrap(), "example.com");
         assert_eq!(
             headers.accept.unwrap(),
@@ -378,8 +415,8 @@ mod tests {
 
     #[test]
     fn it_handles_missing_header_terminator() {
-        let headers = fixtures::create_headers(None, true);
-        let stream = fixtures::create_stream(Some(headers));
+        let headers = fixtures::create_headers(HttpMethod::Get, None, None, true);
+        let stream = fixtures::create_stream(&headers, None);
 
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
@@ -389,5 +426,27 @@ mod tests {
     }
 
     #[test]
-    fn it_handles_missing_body_terminator() {}
+    fn it_handles_content_length_mismatch() {
+        let body = String::from("");
+        let headers = fixtures::create_headers(HttpMethod::Post, Some(512u64), None, false);
+        let stream = fixtures::create_stream(&headers, Some(body.clone()));
+        let error = RequestError {
+            status_code: HttpStatusCode::BadRequest,
+            message: String::from("Bad Request"),
+        };
+        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+    }
+
+    #[test]
+    fn it_handles_content_length_type_mismatch() {
+        let body = String::from("");
+        let headers: String =
+            String::from("POST /path?foo=bar HTTP/1.1\r\nContent-Length: abc\r\n\r\n");
+        let stream = fixtures::create_stream(&headers, Some(body.clone()));
+        let error = RequestError {
+            status_code: HttpStatusCode::BadRequest,
+            message: String::from("Bad Request"),
+        };
+        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+    }
 }
