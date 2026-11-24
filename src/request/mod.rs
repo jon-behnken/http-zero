@@ -87,7 +87,12 @@ impl Request {
             // top-level headers_buffer.
             let mut buf: [u8; 512] = [0; 512];
             match stream.read(&mut buf) {
-                Err(e) => println!("Error reading into buffer: {:?}", e), // FIXME error_handling
+                Err(e) => {
+                    println!("Error reading into buffer: {:?}", e);
+                    return Err(RequestError {
+                        status_code: HttpStatusCode::InternalServerError,
+                    });
+                }
                 Ok(bytes_read) => {
                     if bytes_read == 0 {
                         return Err(RequestError {
@@ -256,7 +261,7 @@ impl Request {
             Ok(mut request) => {
                 let declared_total_bytes: usize;
                 if let Some(content_length) = request.headers.content_length {
-                    if (content_length >= MAX_BODY_SIZE) {
+                    if content_length > MAX_BODY_SIZE {
                         let status_code = HttpStatusCode::ContentTooLarge;
                         return Err(RequestError { status_code });
                     }
@@ -302,10 +307,16 @@ impl Request {
 mod tests {
     use std::assert_eq;
 
+    use crate::request::tests::fixtures::BAD_REQUEST_ERROR;
+
     use super::*;
 
     mod fixtures {
-        use crate::request::http_method::HttpMethod;
+        use super::*;
+
+        pub const BAD_REQUEST_ERROR: RequestError = RequestError {
+            status_code: HttpStatusCode::BadRequest,
+        };
 
         pub fn create_headers(
             http_method: HttpMethod,
@@ -400,10 +411,10 @@ mod tests {
         let body = String::from("");
         let headers: String = String::from("POST   /path?foo=bar HTTP/1.1\r\n\r\n");
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
-        let error = RequestError {
-            status_code: HttpStatusCode::BadRequest,
-        };
-        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+        assert_eq!(
+            Request::from_stream(&mut stream.as_bytes()),
+            Err(BAD_REQUEST_ERROR)
+        )
     }
 
     #[test]
@@ -435,14 +446,47 @@ mod tests {
     }
 
     #[test]
+    fn it_parses_lowercase_header_fields() {
+        let headers = "GET /path?foo=bar HTTP/1.1\r\n\
+                host: example.com\r\n\
+                content-length: 0\r\n\
+                user-agent: ExampleBrowser/1.0\r\n\r\n";
+
+        let stream = fixtures::create_stream(&headers.to_string(), None);
+        let request = Request::from_stream(&mut stream.as_bytes()).unwrap();
+        let headers = request.headers;
+
+        assert_eq!(headers.host.unwrap(), "example.com");
+        assert_eq!(headers.user_agent.unwrap(), "ExampleBrowser/1.0");
+        assert_eq!(headers.content_length.unwrap(), 0u64);
+    }
+
+    #[test]
+    fn it_handles_invalid_byte_in_header() {
+        let mut headers: &[u8] = b"GET /path?foo=bar HTTP/1.1\r\n\
+                host: /\xE3ample.com\r\n\
+                content-length: 0\r\n\
+                user-agent: ExampleBrowser/1.0\r\n\r\n";
+        assert_eq!(Request::from_stream(&mut headers), Err(BAD_REQUEST_ERROR));
+    }
+
+    #[test]
+    fn it_handles_invalid_byte_in_request_line() {
+        let mut headers: &[u8] = b"GET/\xE3 /path?foo=bar HTTP/1.1\r\n\
+                host: example.com\r\n\
+                content-length: 0\r\n\
+                user-agent: ExampleBrowser/1.0\r\n\r\n";
+        assert_eq!(Request::from_stream(&mut headers), Err(BAD_REQUEST_ERROR));
+    }
+
+    #[test]
     fn it_handles_missing_header_terminator() {
         let headers = fixtures::create_headers(HttpMethod::Get, None, None, true);
         let stream = fixtures::create_stream(&headers, None);
-
-        let error = RequestError {
-            status_code: HttpStatusCode::BadRequest,
-        };
-        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+        assert_eq!(
+            Request::from_stream(&mut stream.as_bytes()),
+            Err(BAD_REQUEST_ERROR)
+        )
     }
 
     #[test]
@@ -450,10 +494,10 @@ mod tests {
         let body = String::from("");
         let headers = fixtures::create_headers(HttpMethod::Post, Some(512u64), None, false);
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
-        let error = RequestError {
-            status_code: HttpStatusCode::BadRequest,
-        };
-        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+        assert_eq!(
+            Request::from_stream(&mut stream.as_bytes()),
+            Err(BAD_REQUEST_ERROR)
+        )
     }
 
     #[test]
@@ -462,10 +506,10 @@ mod tests {
         let headers: String =
             String::from("POST /path?foo=bar HTTP/1.1\r\nContent-Length: abc\r\n\r\n");
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
-        let error = RequestError {
-            status_code: HttpStatusCode::BadRequest,
-        };
-        assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
+        assert_eq!(
+            Request::from_stream(&mut stream.as_bytes()),
+            Err(BAD_REQUEST_ERROR)
+        )
     }
 
     #[test]
