@@ -1,4 +1,6 @@
-#[derive(Clone, Debug, PartialEq)]
+use std::fmt::Display;
+
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u16)]
 pub enum HttpStatusCode {
     Ok = 200,
@@ -11,10 +13,16 @@ pub enum HttpStatusCode {
     NotImplemented = 501,
 }
 
+impl Display for HttpStatusCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", *self as u16)
+    }
+}
+
 impl HttpStatusCode {
-    pub fn reason(&self) -> &str {
+    pub fn reason(&self) -> &'static str {
         match self {
-            HttpStatusCode::Ok => "Ok",
+            HttpStatusCode::Ok => "OK",
             HttpStatusCode::Created => "Created",
             HttpStatusCode::NotFound => "Not Found",
             HttpStatusCode::BadRequest => "Bad Request",

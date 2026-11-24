@@ -6,7 +6,12 @@ use crate::response::http_status_code::HttpStatusCode;
 #[derive(Debug, PartialEq)]
 pub struct RequestError {
     pub status_code: HttpStatusCode,
-    pub message: String,
+}
+
+impl RequestError {
+    pub fn message(&self) -> &'static str {
+        self.status_code.reason()
+    }
 }
 
 impl From<FromUtf8Error> for RequestError {
@@ -14,7 +19,6 @@ impl From<FromUtf8Error> for RequestError {
         eprintln!("{}", value);
         RequestError {
             status_code: HttpStatusCode::BadRequest,
-            message: "Bad Request".to_string(),
         }
     }
 }
@@ -24,7 +28,6 @@ impl From<Utf8Error> for RequestError {
         eprintln!("{}", value);
         RequestError {
             status_code: HttpStatusCode::BadRequest,
-            message: "Bad Request".to_string(),
         }
     }
 }

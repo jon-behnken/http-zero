@@ -12,11 +12,10 @@ impl Response {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let reason = HttpStatusCode::reason(&self.status_code);
         let mut bytes = format!(
             "HTTP/1.1 {} {}\r\n\r\n",
-            self.status_code.clone() as u16,
-            reason
+            self.status_code as u16,
+            self.status_code.reason()
         )
         .as_bytes()
         .to_vec();

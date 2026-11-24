@@ -92,7 +92,6 @@ impl Request {
                     if bytes_read == 0 {
                         return Err(RequestError {
                             status_code: HttpStatusCode::BadRequest,
-                            message: "Bad Request".to_string(),
                         });
                     }
                     // The stream may end up containing less bytes than we've allocated for the buffer.
@@ -143,7 +142,6 @@ impl Request {
             if reading_http_request_line && request_line_delimiter_count > 2 {
                 return Err(RequestError {
                     status_code: HttpStatusCode::BadRequest,
-                    message: "Bad Request".to_string(),
                 });
             }
 
@@ -223,14 +221,12 @@ impl Request {
                     Ok(c) => Ok(Some(c)),
                     Err(e) => Err(RequestError {
                         status_code: HttpStatusCode::BadRequest,
-                        message: "Bad Request".to_string(),
                     }),
                 },
                 None => {
                     if method.length_required() {
                         return Err(RequestError {
                             status_code: HttpStatusCode::LengthRequired,
-                            message: "Length Required".to_string(),
                         });
                     };
                     Ok(None)
@@ -262,15 +258,11 @@ impl Request {
                 if let Some(content_length) = request.headers.content_length {
                     if (content_length >= MAX_BODY_SIZE) {
                         let status_code = HttpStatusCode::ContentTooLarge;
-                        return Err(RequestError {
-                            status_code,
-                            message: "Too Large".to_string(),
-                        });
+                        return Err(RequestError { status_code });
                     }
                     declared_total_bytes =
                         usize::try_from(content_length).map_err(|_| RequestError {
                             status_code: HttpStatusCode::BadRequest,
-                            message: "Bad R".to_string(),
                         })?
                 } else {
                     return Ok(request);
@@ -285,14 +277,12 @@ impl Request {
                         Err(e) => {
                             return Err(RequestError {
                                 status_code: HttpStatusCode::InternalServerError,
-                                message: format!("Error reading request body: {}", e),
                             });
                         }
                         Ok(bytes_read) => {
                             if bytes_read == 0 {
                                 return Err(RequestError {
                                     status_code: HttpStatusCode::BadRequest,
-                                    message: "Bad Request".to_string(),
                                 });
                             }
                             let bytes = &buf[0..bytes_read];
@@ -412,7 +402,6 @@ mod tests {
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
-            message: String::from("Bad Request"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
@@ -423,7 +412,6 @@ mod tests {
         let stream = fixtures::create_stream(&headers, None);
         let error = RequestError {
             status_code: HttpStatusCode::NotImplemented,
-            message: String::from("Not Implemented"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
@@ -453,7 +441,6 @@ mod tests {
 
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
-            message: String::from("Bad Request"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
@@ -465,7 +452,6 @@ mod tests {
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
-            message: String::from("Bad Request"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
@@ -478,7 +464,6 @@ mod tests {
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
         let error = RequestError {
             status_code: HttpStatusCode::BadRequest,
-            message: String::from("Bad Request"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }
@@ -491,7 +476,6 @@ mod tests {
         let stream = fixtures::create_stream(&headers, Some(body.clone()));
         let error = RequestError {
             status_code: HttpStatusCode::LengthRequired,
-            message: String::from("Length Required"),
         };
         assert_eq!(Request::from_stream(&mut stream.as_bytes()), Err(error))
     }

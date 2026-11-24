@@ -44,7 +44,6 @@ impl FromStr for HttpMethod {
             "PATCH" => Ok(HttpMethod::Patch),
             _ => Err(RequestError {
                 status_code: HttpStatusCode::NotImplemented,
-                message: "Not Implemented".to_string(),
             }),
         }
     }
