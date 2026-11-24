@@ -71,7 +71,7 @@ impl Server {
     fn create_stream_handler(router: Router) -> StreamHandler {
         Arc::new(move |mut stream: TcpStream| {
             let response: Response = match Request::from_stream(&mut stream) {
-                Err(e) => Response::new(e.status_code, e.message.into()),
+                Err(e) => Response::new(e.status_code, e.message().into()),
                 Ok(request) => {
                     println!(
                         "[Router] [{:?}] {:?}",
